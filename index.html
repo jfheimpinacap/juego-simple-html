@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Mini Run & Gun 2D</title>
+  <title>Mini Run & Gun 2D - Versión 2</title>
   <style>
     :root {
       --bg: #0f1b1f;
@@ -14,9 +14,7 @@
       --warning: #ffd166;
       --shadow: rgba(0, 0, 0, 0.35);
     }
-
     * { box-sizing: border-box; }
-
     body {
       margin: 0;
       font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
@@ -27,7 +25,6 @@
       place-items: center;
       padding: 16px;
     }
-
     .wrap {
       width: min(980px, 100%);
       background: linear-gradient(180deg, #1a2a30, #132126);
@@ -36,7 +33,6 @@
       padding: 14px;
       box-shadow: 0 18px 40px var(--shadow);
     }
-
     h1 {
       margin: 0 0 8px;
       font-size: clamp(1.1rem, 2.5vw, 1.5rem);
@@ -44,7 +40,6 @@
       color: #c8f3d0;
       text-align: center;
     }
-
     .hud {
       display: flex;
       justify-content: space-between;
@@ -53,7 +48,6 @@
       flex-wrap: wrap;
       font-size: 0.95rem;
     }
-
     .hud .pill {
       background: var(--panel);
       border: 1px solid #34535e;
@@ -62,7 +56,6 @@
       min-width: 180px;
       text-align: center;
     }
-
     canvas {
       width: 100%;
       height: auto;
@@ -72,31 +65,28 @@
       background: #1d3b3f;
       image-rendering: pixelated;
     }
-
     .help {
       margin-top: 10px;
       font-size: 0.88rem;
       opacity: 0.9;
       text-align: center;
     }
-
-    .danger { color: var(--danger); }
-    .ok { color: var(--accent); }
-    .warn { color: var(--warning); }
   </style>
 </head>
 <body>
   <main class="wrap">
     <h1>Mini Run &amp; Gun — Arcade 2D</h1>
-    <div class="hud" id="hud">
+    <div class="hud">
       <div class="pill" id="hudLives">Vidas: 3</div>
       <div class="pill" id="hudScore">Puntaje: 0</div>
       <div class="pill" id="hudState">Estado: Inicio</div>
+      <div class="pill" id="hudSound">Sonido: ON (M)</div>
     </div>
     <canvas id="gameCanvas" width="960" height="540" aria-label="Juego run and gun 2D"></canvas>
     <div class="help">
       Controles: <strong>A</strong> izquierda, <strong>D</strong> derecha, <strong>W</strong> saltar,
-      <strong>S</strong> agacharse, <strong>Espacio</strong> disparar, <strong>R</strong> reiniciar.
+      <strong>S</strong> agacharse, <strong>Espacio</strong> disparar,
+      <strong>M</strong> sonido ON/OFF, <strong>R</strong> reiniciar.
     </div>
   </main>
 
@@ -104,7 +94,7 @@
     "use strict";
 
     // ======================================================
-    // CONFIGURACIÓN GENERAL
+    // CONFIGURACIÓN
     // ======================================================
     const canvas = document.getElementById("gameCanvas");
     const ctx = canvas.getContext("2d");
@@ -112,19 +102,16 @@
     const hudLives = document.getElementById("hudLives");
     const hudScore = document.getElementById("hudScore");
     const hudState = document.getElementById("hudState");
+    const hudSound = document.getElementById("hudSound");
 
-    const WORLD = {
-      width: canvas.width,
-      height: canvas.height,
-      groundY: 430,
-      gravity: 0.8,
-      cameraSpeed: 2.1,
-    };
+    const WORLD = { width: canvas.width, height: canvas.height, groundY: 430, gravity: 0.8, cameraSpeed: 2.1 };
+    const BOSS_SCORE_TRIGGER = 30;
 
     const GAME_STATE = {
       START: "START",
       PLAYING: "PLAYING",
       GAME_OVER: "GAME_OVER",
+      VICTORY: "VICTORY",
     };
 
     let gameState = GAME_STATE.START;
@@ -134,13 +121,7 @@
     // ======================================================
     // INPUT
     // ======================================================
-    const keys = {
-      a: false,
-      d: false,
-      w: false,
-      s: false,
-      space: false,
-    };
+    const keys = { a: false, d: false, w: false, s: false, space: false };
 
     window.addEventListener("keydown", (e) => {
       const k = e.key.toLowerCase();
@@ -153,13 +134,13 @@
         e.preventDefault();
       }
 
-      // Empezar partida desde pantalla inicial
+      if (k === "m") toggleSound();
+
       if (gameState === GAME_STATE.START && (e.code === "Space" || k === "enter")) {
         gameState = GAME_STATE.PLAYING;
       }
 
-      // Reiniciar en Game Over
-      if (gameState === GAME_STATE.GAME_OVER && k === "r") {
+      if ((gameState === GAME_STATE.GAME_OVER || gameState === GAME_STATE.VICTORY) && k === "r") {
         resetGame();
       }
     });
@@ -174,68 +155,67 @@
     });
 
     // ======================================================
+    // SONIDOS (Web Audio API)
+    // ======================================================
+    let audioCtx = null;
+    let soundEnabled = true;
+
+    function getAudioCtx() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      return audioCtx;
+    }
+
+    function beep(type, frequency, duration, volume, slide = 0) {
+      if (!soundEnabled) return;
+      const ac = getAudioCtx();
+      const t = ac.currentTime;
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+
+      osc.type = type;
+      osc.frequency.setValueAtTime(frequency, t);
+      if (slide !== 0) osc.frequency.linearRampToValueAtTime(Math.max(40, frequency + slide), t + duration);
+
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(volume, t + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + duration);
+
+      osc.connect(gain);
+      gain.connect(ac.destination);
+      osc.start(t);
+      osc.stop(t + duration + 0.02);
+    }
+
+    function playShootSound() { beep("square", 460, 0.06, 0.05, -60); }
+    function playHitSound() { beep("triangle", 240, 0.08, 0.06, 40); }
+    function playPlayerDamageSound() { beep("sawtooth", 130, 0.16, 0.07, -50); }
+    function playEnemyDownSound() { beep("square", 180, 0.11, 0.07, -90); }
+    function playBossAppearSound() { beep("sawtooth", 110, 0.35, 0.08, -20); }
+    function playBossDefeatSound() { beep("triangle", 200, 0.38, 0.08, 220); }
+
+    function toggleSound() {
+      soundEnabled = !soundEnabled;
+      updateHUD();
+    }
+
+    // ======================================================
     // JUGADOR
     // ======================================================
     const player = {
-      x: 140,
-      y: WORLD.groundY - 74,
-      w: 44,
-      h: 74,
-      vx: 0,
-      vy: 0,
-      speed: 4,
-      jumpStrength: 14,
-      isOnGround: true,
-      crouching: false,
-      lives: 3,
-      invulnerableTimer: 0,
-      shootCooldown: 0,
-      facing: 1, // 1 derecha, -1 izquierda
+      x: 140, y: WORLD.groundY - 74, w: 44, h: 74,
+      vx: 0, vy: 0, speed: 4, jumpStrength: 14,
+      isOnGround: true, crouching: false, lives: 3,
+      invulnerableTimer: 0, shootCooldown: 0, facing: 1,
+      shootAnimTimer: 0, hurtAnimTimer: 0,
     };
 
     function resetPlayer() {
-      player.x = 140;
-      player.y = WORLD.groundY - 74;
-      player.w = 44;
-      player.h = 74;
-      player.vx = 0;
-      player.vy = 0;
-      player.speed = 4;
-      player.jumpStrength = 14;
-      player.isOnGround = true;
-      player.crouching = false;
-      player.lives = 3;
-      player.invulnerableTimer = 0;
-      player.shootCooldown = 0;
-      player.facing = 1;
-    }
-
-    // ======================================================
-    // BALAS
-    // ======================================================
-    const bullets = [];
-
-    function spawnBullet() {
-      const isCrouch = player.crouching;
-      const bulletY = isCrouch ? player.y + player.h * 0.65 : player.y + player.h * 0.42;
-      const bulletX = player.facing === 1 ? player.x + player.w + 2 : player.x - 12;
-      bullets.push({
-        x: bulletX,
-        y: bulletY,
-        w: 12,
-        h: 4,
-        vx: 9 * player.facing,
-      });
-    }
-
-    function updateBullets() {
-      for (let i = bullets.length - 1; i >= 0; i--) {
-        const b = bullets[i];
-        b.x += b.vx;
-        if (b.x > WORLD.width + 30 || b.x < -30) {
-          bullets.splice(i, 1);
-        }
-      }
+      player.x = 140; player.y = WORLD.groundY - 74; player.w = 44; player.h = 74;
+      player.vx = 0; player.vy = 0; player.speed = 4; player.jumpStrength = 14;
+      player.isOnGround = true; player.crouching = false; player.lives = 3;
+      player.invulnerableTimer = 0; player.shootCooldown = 0; player.facing = 1;
+      player.shootAnimTimer = 0; player.hurtAnimTimer = 0;
     }
 
     // ======================================================
@@ -246,33 +226,154 @@
 
     function spawnEnemy() {
       const size = 42 + Math.random() * 12;
-      const speed = 1.8 + Math.random() * 1.9 + score * 0.01;
       enemies.push({
         x: WORLD.width + 20,
         y: WORLD.groundY - size,
         w: size,
         h: size,
-        vx: speed,
+        vx: 1.8 + Math.random() * 1.9 + score * 0.01,
         hitFlash: 0,
+        life: 1,
+        animPhase: Math.random() * Math.PI * 2,
       });
     }
 
     function updateEnemies() {
-      enemySpawnTimer -= 1;
-      if (enemySpawnTimer <= 0) {
-        spawnEnemy();
-        // Menor intervalo = más dificultad
-        enemySpawnTimer = Math.max(32, 88 - Math.floor(score / 15));
+      if (!boss.active) {
+        enemySpawnTimer -= 1;
+        if (enemySpawnTimer <= 0) {
+          spawnEnemy();
+          enemySpawnTimer = Math.max(34, 86 - Math.floor(score / 15));
+        }
       }
 
       for (let i = enemies.length - 1; i >= 0; i--) {
         const e = enemies[i];
         e.x -= e.vx + WORLD.cameraSpeed * 0.18;
+        e.animPhase += 0.16;
         if (e.hitFlash > 0) e.hitFlash -= 1;
+        if (e.x + e.w < -40) enemies.splice(i, 1);
+      }
+    }
 
-        if (e.x + e.w < -40) {
-          enemies.splice(i, 1);
+    // ======================================================
+    // JEFE FINAL
+    // ======================================================
+    const boss = {
+      active: false,
+      defeated: false,
+      x: WORLD.width + 260,
+      y: 250,
+      w: 140,
+      h: 170,
+      vx: 1.6,
+      vy: 1.2,
+      maxLife: 45,
+      life: 45,
+      shootTimer: 0,
+      hitFlash: 0,
+      attackMode: "projectile",
+    };
+
+    const enemyBullets = [];
+
+    function spawnBossIfNeeded() {
+      if (!boss.active && !boss.defeated && score >= BOSS_SCORE_TRIGGER) {
+        boss.active = true;
+        enemies.length = 0;
+        playBossAppearSound();
+      }
+    }
+
+    function updateBoss() {
+      if (!boss.active) return;
+
+      boss.x -= boss.vx;
+      if (boss.x < WORLD.width - 320) boss.x = WORLD.width - 320;
+
+      boss.y += boss.vy;
+      if (boss.y < 140 || boss.y + boss.h > WORLD.groundY) boss.vy *= -1;
+
+      boss.shootTimer -= 1;
+      if (boss.shootTimer <= 0) {
+        if (Math.random() < 0.55) {
+          // Ataque por proyectil
+          enemyBullets.push({ x: boss.x, y: boss.y + 70, w: 14, h: 8, vx: -5.8, vy: 0 });
+          boss.attackMode = "projectile";
+          boss.shootTimer = 48;
+        } else {
+          // Ataque de avance corto
+          boss.attackMode = "charge";
+          boss.x -= 24;
+          boss.shootTimer = 65;
         }
+      }
+
+      if (boss.hitFlash > 0) boss.hitFlash -= 1;
+    }
+
+    function updateEnemyBullets() {
+      for (let i = enemyBullets.length - 1; i >= 0; i--) {
+        const b = enemyBullets[i];
+        b.x += b.vx;
+        b.y += b.vy;
+        if (b.x + b.w < -20) enemyBullets.splice(i, 1);
+      }
+    }
+
+    // ======================================================
+    // BALAS / EFECTOS
+    // ======================================================
+    const bullets = [];
+    const hitEffects = [];
+    const explosions = [];
+
+    function spawnBullet() {
+      const bulletY = player.crouching ? player.y + player.h * 0.65 : player.y + player.h * 0.42;
+      const bulletX = player.facing === 1 ? player.x + player.w + 2 : player.x - 12;
+      bullets.push({ x: bulletX, y: bulletY, w: 12, h: 4, vx: 9 * player.facing });
+      player.shootAnimTimer = 5;
+      playShootSound();
+    }
+
+    function spawnHitEffect(x, y) {
+      hitEffects.push({ x, y, r: 2, life: 10 });
+    }
+
+    function spawnExplosion(x, y) {
+      for (let i = 0; i < 8; i++) {
+        explosions.push({
+          x, y,
+          vx: (Math.random() - 0.5) * 4,
+          vy: (Math.random() - 0.5) * 4,
+          life: 18 + Math.random() * 8,
+          size: 3 + Math.random() * 3,
+        });
+      }
+    }
+
+    function updateBullets() {
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        bullets[i].x += bullets[i].vx;
+        if (bullets[i].x > WORLD.width + 30 || bullets[i].x < -30) bullets.splice(i, 1);
+      }
+    }
+
+    function updateEffects() {
+      for (let i = hitEffects.length - 1; i >= 0; i--) {
+        const fx = hitEffects[i];
+        fx.r += 0.8;
+        fx.life -= 1;
+        if (fx.life <= 0) hitEffects.splice(i, 1);
+      }
+
+      for (let i = explosions.length - 1; i >= 0; i--) {
+        const p = explosions[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.08;
+        p.life -= 1;
+        if (p.life <= 0) explosions.splice(i, 1);
       }
     }
 
@@ -280,19 +381,23 @@
     // COLISIONES
     // ======================================================
     function intersects(a, b) {
-      return (
-        a.x < b.x + b.w &&
-        a.x + a.w > b.x &&
-        a.y < b.y + b.h &&
-        a.y + a.h > b.y
-      );
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    function damagePlayer() {
+      if (player.invulnerableTimer > 0) return;
+      player.lives -= 1;
+      player.invulnerableTimer = 90;
+      player.hurtAnimTimer = 18;
+      playPlayerDamageSound();
+      if (player.lives <= 0) gameState = GAME_STATE.GAME_OVER;
     }
 
     function handleCollisions() {
-      // Bala vs enemigo
+      // Bala del jugador vs enemigos normales
       for (let bi = bullets.length - 1; bi >= 0; bi--) {
         const b = bullets[bi];
-        let bulletRemoved = false;
+        let removed = false;
 
         for (let ei = enemies.length - 1; ei >= 0; ei--) {
           const e = enemies[ei];
@@ -300,106 +405,59 @@
             bullets.splice(bi, 1);
             enemies.splice(ei, 1);
             score += 10;
-            bulletRemoved = true;
+            spawnHitEffect(b.x, b.y);
+            spawnExplosion(e.x + e.w / 2, e.y + e.h / 2);
+            playHitSound();
+            playEnemyDownSound();
+            removed = true;
             break;
           }
         }
 
-        if (bulletRemoved) continue;
-      }
+        if (removed) continue;
 
-      // Enemigo vs jugador
-      for (let i = enemies.length - 1; i >= 0; i--) {
-        const e = enemies[i];
-        if (intersects(player, e)) {
-          enemies.splice(i, 1);
-          if (player.invulnerableTimer <= 0) {
-            player.lives -= 1;
-            player.invulnerableTimer = 90;
-            if (player.lives <= 0) {
-              gameState = GAME_STATE.GAME_OVER;
-            }
+        // Bala del jugador vs jefe
+        if (boss.active && intersects(b, boss)) {
+          bullets.splice(bi, 1);
+          boss.life -= 1;
+          boss.hitFlash = 4;
+          spawnHitEffect(b.x, b.y);
+          playHitSound();
+          if (boss.life <= 0) {
+            boss.active = false;
+            boss.defeated = true;
+            spawnExplosion(boss.x + boss.w / 2, boss.y + boss.h / 2);
+            spawnExplosion(boss.x + boss.w / 3, boss.y + boss.h / 3);
+            playBossDefeatSound();
+            gameState = GAME_STATE.VICTORY;
           }
         }
       }
+
+      // Enemigo normal vs jugador
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        if (intersects(player, enemies[i])) {
+          enemies.splice(i, 1);
+          damagePlayer();
+        }
+      }
+
+      // Bala enemiga vs jugador
+      for (let i = enemyBullets.length - 1; i >= 0; i--) {
+        if (intersects(player, enemyBullets[i])) {
+          enemyBullets.splice(i, 1);
+          damagePlayer();
+        }
+      }
+
+      // Jefe vs jugador (cuando hace avance)
+      if (boss.active && intersects(player, boss)) damagePlayer();
     }
 
     // ======================================================
-    // ACTUALIZACIÓN DE JUEGO
-    // ======================================================
-    function updatePlayer() {
-      // Movimiento horizontal
-      player.vx = 0;
-      if (keys.a) {
-        player.vx = -player.speed;
-        player.facing = -1;
-      }
-      if (keys.d) {
-        player.vx = player.speed;
-        player.facing = 1;
-      }
-
-      // Agacharse (solo en suelo)
-      player.crouching = keys.s && player.isOnGround;
-      if (player.crouching) {
-        player.h = 50;
-      } else {
-        player.h = 74;
-      }
-
-      // Ajustar Y para que no se hunda al cambiar altura
-      player.y = Math.min(player.y, WORLD.groundY - player.h);
-
-      // Salto
-      if (keys.w && player.isOnGround && !player.crouching) {
-        player.vy = -player.jumpStrength;
-        player.isOnGround = false;
-      }
-
-      // Aplicar física
-      player.x += player.vx;
-      player.vy += WORLD.gravity;
-      player.y += player.vy;
-
-      // Suelo
-      if (player.y + player.h >= WORLD.groundY) {
-        player.y = WORLD.groundY - player.h;
-        player.vy = 0;
-        player.isOnGround = true;
-      }
-
-      // Límites laterales
-      if (player.x < 30) player.x = 30;
-      if (player.x + player.w > WORLD.width * 0.55) {
-        player.x = WORLD.width * 0.55 - player.w;
-      }
-
-      // Disparo con enfriamiento
-      if (player.shootCooldown > 0) player.shootCooldown -= 1;
-      if (keys.space && player.shootCooldown <= 0) {
-        spawnBullet();
-        player.shootCooldown = 12;
-      }
-
-      if (player.invulnerableTimer > 0) {
-        player.invulnerableTimer -= 1;
-      }
-    }
-
-    function updateGame() {
-      worldTime += 1;
-      updatePlayer();
-      updateBullets();
-      updateEnemies();
-      handleCollisions();
-      updateHUD();
-    }
-
-    // ======================================================
-    // RENDERIZADO (ESCENARIO Y ENTIDADES)
+    // RENDER
     // ======================================================
     function drawBackground() {
-      // Cielo degradado
       const sky = ctx.createLinearGradient(0, 0, 0, WORLD.height);
       sky.addColorStop(0, "#3b7d7e");
       sky.addColorStop(0.45, "#2e6466");
@@ -407,187 +465,303 @@
       ctx.fillStyle = sky;
       ctx.fillRect(0, 0, WORLD.width, WORLD.height);
 
-      // Siluetas de vegetación / base militar
       const offsetFar = (worldTime * 0.3) % WORLD.width;
       const offsetMid = (worldTime * 0.8) % WORLD.width;
 
-      // Capa lejana
       ctx.fillStyle = "#20454a";
       for (let i = -1; i < 6; i++) {
         const x = i * 220 - offsetFar;
         ctx.fillRect(x + 40, 190, 35, 130);
         ctx.beginPath();
-        ctx.moveTo(x, 220);
-        ctx.lineTo(x + 70, 150);
-        ctx.lineTo(x + 140, 220);
-        ctx.closePath();
-        ctx.fill();
+        ctx.moveTo(x, 220); ctx.lineTo(x + 70, 150); ctx.lineTo(x + 140, 220);
+        ctx.closePath(); ctx.fill();
       }
 
-      // Capa media
       ctx.fillStyle = "#2d5b45";
       for (let i = -1; i < 8; i++) {
         const x = i * 150 - offsetMid;
         ctx.fillRect(x + 56, 240, 12, 96);
-        ctx.beginPath();
-        ctx.arc(x + 62, 220, 35, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(x + 62, 220, 35, 0, Math.PI * 2); ctx.fill();
       }
 
-      // Suelo
       ctx.fillStyle = "#435d35";
       ctx.fillRect(0, WORLD.groundY, WORLD.width, WORLD.height - WORLD.groundY);
 
-      // Línea de terreno para sensación de avance
       ctx.strokeStyle = "#7b9f5d";
       ctx.lineWidth = 3;
       ctx.beginPath();
       for (let x = 0; x <= WORLD.width; x += 24) {
         const y = WORLD.groundY + 8 + Math.sin((x + worldTime * 4) * 0.04) * 3;
-        if (x === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+        x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       }
       ctx.stroke();
     }
 
     function drawPlayer() {
+      // Parpadeo invulnerable
       const blink = player.invulnerableTimer > 0 && Math.floor(player.invulnerableTimer / 6) % 2 === 0;
       if (blink) return;
 
-      // Cuerpo base
-      ctx.fillStyle = "#8fb07c";
-      ctx.fillRect(player.x + 8, player.y + 20, player.w - 16, player.h - 20);
+      // Animación de caminar (sube/baja levemente el cuerpo)
+      const walking = Math.abs(player.vx) > 0.1 && player.isOnGround;
+      const walkOffset = walking ? Math.sin(worldTime * 0.35) * 2 : 0;
+      const legShift = walking ? Math.sin(worldTime * 0.35) * 4 : 0;
+      const hurtTint = player.hurtAnimTimer > 0 ? "#c95e5e" : "#8fb07c";
 
-      // Casco
+      ctx.fillStyle = hurtTint;
+      ctx.fillRect(player.x + 8, player.y + 20 + walkOffset, player.w - 16, player.h - 20);
+
       ctx.fillStyle = "#4c6d4f";
-      ctx.fillRect(player.x + 8, player.y + 4, player.w - 16, 18);
+      ctx.fillRect(player.x + 8, player.y + 4 + walkOffset, player.w - 16, 18);
 
-      // Rostro
       ctx.fillStyle = "#d1b08f";
-      ctx.fillRect(player.x + 13, player.y + 10, player.w - 26, 12);
+      ctx.fillRect(player.x + 13, player.y + 10 + walkOffset, player.w - 26, 12);
 
-      // Piernas
       ctx.fillStyle = "#5c7b56";
       if (player.crouching) {
         ctx.fillRect(player.x + 9, player.y + player.h - 14, 12, 10);
         ctx.fillRect(player.x + player.w - 21, player.y + player.h - 14, 12, 10);
       } else {
-        ctx.fillRect(player.x + 9, player.y + player.h - 24, 12, 20);
-        ctx.fillRect(player.x + player.w - 21, player.y + player.h - 24, 12, 20);
+        ctx.fillRect(player.x + 9 + legShift * 0.3, player.y + player.h - 24, 12, 20);
+        ctx.fillRect(player.x + player.w - 21 - legShift * 0.3, player.y + player.h - 24, 12, 20);
       }
 
-      // Arma
-      ctx.fillStyle = "#2e2e2e";
+      // Arma con animación de disparo (retroceso + muzzle flash)
       const gunY = player.crouching ? player.y + player.h * 0.62 : player.y + player.h * 0.42;
+      const kick = player.shootAnimTimer > 0 ? 2 : 0;
+      ctx.fillStyle = "#2e2e2e";
       if (player.facing === 1) {
-        ctx.fillRect(player.x + player.w - 6, gunY, 16, 4);
+        ctx.fillRect(player.x + player.w - 6 - kick, gunY, 16, 4);
+        if (player.shootAnimTimer > 0) {
+          ctx.fillStyle = "#ffd166";
+          ctx.fillRect(player.x + player.w + 11, gunY - 2, 5, 8);
+        }
       } else {
-        ctx.fillRect(player.x - 10, gunY, 16, 4);
+        ctx.fillRect(player.x - 10 + kick, gunY, 16, 4);
+        if (player.shootAnimTimer > 0) {
+          ctx.fillStyle = "#ffd166";
+          ctx.fillRect(player.x - 15, gunY - 2, 5, 8);
+        }
       }
     }
 
     function drawBullets() {
       ctx.fillStyle = "#ffe082";
-      bullets.forEach((b) => {
-        ctx.fillRect(b.x, b.y, b.w, b.h);
-      });
+      bullets.forEach((b) => ctx.fillRect(b.x, b.y, b.w, b.h));
+
+      ctx.fillStyle = "#ff6b6b";
+      enemyBullets.forEach((b) => ctx.fillRect(b.x, b.y, b.w, b.h));
     }
 
     function drawEnemy(e) {
-      // Cuerpo
+      const bob = Math.sin(e.animPhase) * 3;
       ctx.fillStyle = e.hitFlash > 0 ? "#ff8d8d" : "#d96f4c";
-      ctx.fillRect(e.x, e.y + 10, e.w, e.h - 10);
+      ctx.fillRect(e.x, e.y + 10 + bob, e.w, e.h - 10);
 
-      // Cabeza
       ctx.fillStyle = "#784421";
-      ctx.fillRect(e.x + e.w * 0.2, e.y, e.w * 0.6, 14);
+      ctx.fillRect(e.x + e.w * 0.2, e.y + bob, e.w * 0.6, 14);
 
-      // Piernas
+      const step = Math.sin(e.animPhase) * 2;
       ctx.fillStyle = "#803f27";
-      ctx.fillRect(e.x + 6, e.y + e.h - 14, 10, 14);
-      ctx.fillRect(e.x + e.w - 16, e.y + e.h - 14, 10, 14);
+      ctx.fillRect(e.x + 6, e.y + e.h - 14 + step, 10, 14);
+      ctx.fillRect(e.x + e.w - 16, e.y + e.h - 14 - step, 10, 14);
 
-      // Ojo
       ctx.fillStyle = "#fff3d6";
-      ctx.fillRect(e.x + e.w * 0.63, e.y + 5, 5, 3);
+      ctx.fillRect(e.x + e.w * 0.63, e.y + 5 + bob, 5, 3);
     }
 
-    function drawEnemies() {
-      enemies.forEach(drawEnemy);
+    function drawBoss() {
+      if (!boss.active) return;
+      ctx.fillStyle = boss.hitFlash > 0 ? "#f07a7a" : "#7d4ddb";
+      ctx.fillRect(boss.x, boss.y + 24, boss.w, boss.h - 24);
+
+      ctx.fillStyle = "#4e2f8e";
+      ctx.fillRect(boss.x + 20, boss.y, boss.w - 40, 28);
+
+      ctx.fillStyle = "#f2d6ff";
+      ctx.fillRect(boss.x + 88, boss.y + 9, 10, 6);
+
+      ctx.fillStyle = "#311e5e";
+      if (boss.attackMode === "projectile") {
+        ctx.fillRect(boss.x - 16, boss.y + 68, 18, 8);
+      } else {
+        ctx.fillRect(boss.x - 22, boss.y + 64, 24, 12);
+      }
+
+      // Barra de vida del jefe
+      const barX = WORLD.width * 0.18;
+      const barY = 24;
+      const barW = WORLD.width * 0.64;
+      const ratio = Math.max(0, boss.life / boss.maxLife);
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.fillRect(barX, barY, barW, 18);
+      ctx.fillStyle = "#ff5f5f";
+      ctx.fillRect(barX, barY, barW * ratio, 18);
+      ctx.strokeStyle = "#ffd2d2";
+      ctx.strokeRect(barX, barY, barW, 18);
+
+      ctx.textAlign = "center";
+      ctx.font = "bold 18px Segoe UI";
+      ctx.fillStyle = "#ffe3e3";
+      ctx.fillText("Jefe final", WORLD.width / 2, 18);
+    }
+
+    function drawEffects() {
+      hitEffects.forEach((fx) => {
+        ctx.beginPath();
+        ctx.arc(fx.x, fx.y, fx.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255, 230, 150, ${fx.life / 10})`;
+        ctx.fill();
+      });
+
+      explosions.forEach((p) => {
+        ctx.fillStyle = `rgba(255, ${120 + Math.floor(Math.random() * 80)}, 60, ${Math.max(0, p.life / 26)})`;
+        ctx.fillRect(p.x, p.y, p.size, p.size);
+      });
     }
 
     function drawOverlayText() {
       if (gameState === GAME_STATE.START) {
         ctx.fillStyle = "rgba(8, 15, 18, 0.62)";
         ctx.fillRect(0, 0, WORLD.width, WORLD.height);
-
         ctx.fillStyle = "#d9ffe2";
         ctx.textAlign = "center";
         ctx.font = "bold 46px Segoe UI";
         ctx.fillText("MINI RUN & GUN", WORLD.width / 2, 165);
-
-        ctx.font = "24px Segoe UI";
-        ctx.fillStyle = "#f5f8f2";
-        ctx.fillText("Instrucciones", WORLD.width / 2, 230);
-
         ctx.font = "20px Segoe UI";
-        ctx.fillText("A: izquierda | D: derecha | W: saltar | S: agacharse", WORLD.width / 2, 276);
-        ctx.fillText("Espacio: disparar", WORLD.width / 2, 310);
-
+        ctx.fillStyle = "#f5f8f2";
+        ctx.fillText("A/D mover | W saltar | S agacharse | Espacio disparar", WORLD.width / 2, 260);
+        ctx.fillText("M activar/desactivar sonido | R reiniciar", WORLD.width / 2, 296);
         ctx.font = "bold 22px Segoe UI";
         ctx.fillStyle = "#aef0ba";
-        ctx.fillText("Pulsa ESPACIO o ENTER para comenzar", WORLD.width / 2, 372);
+        ctx.fillText("Pulsa ESPACIO o ENTER para comenzar", WORLD.width / 2, 360);
       }
 
       if (gameState === GAME_STATE.GAME_OVER) {
         ctx.fillStyle = "rgba(10, 0, 0, 0.58)";
         ctx.fillRect(0, 0, WORLD.width, WORLD.height);
-
         ctx.textAlign = "center";
         ctx.fillStyle = "#ffd1d1";
         ctx.font = "bold 52px Segoe UI";
         ctx.fillText("GAME OVER", WORLD.width / 2, 220);
-
         ctx.fillStyle = "#ffffff";
         ctx.font = "26px Segoe UI";
         ctx.fillText(`Puntaje final: ${score}`, WORLD.width / 2, 280);
-
         ctx.fillStyle = "#fff2c2";
         ctx.font = "bold 24px Segoe UI";
         ctx.fillText("Pulsa R para reiniciar", WORLD.width / 2, 336);
+      }
+
+      if (gameState === GAME_STATE.VICTORY) {
+        ctx.fillStyle = "rgba(3, 15, 8, 0.62)";
+        ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#b8ffd6";
+        ctx.font = "bold 50px Segoe UI";
+        ctx.fillText("¡VICTORIA!", WORLD.width / 2, 220);
+        ctx.fillStyle = "#ecfff5";
+        ctx.font = "26px Segoe UI";
+        ctx.fillText(`Derrotaste al jefe. Puntaje: ${score}`, WORLD.width / 2, 278);
+        ctx.fillStyle = "#fff2c2";
+        ctx.font = "bold 24px Segoe UI";
+        ctx.fillText("Pulsa R para jugar otra vez", WORLD.width / 2, 336);
       }
     }
 
     function render() {
       drawBackground();
       drawPlayer();
+      enemies.forEach(drawEnemy);
+      drawBoss();
       drawBullets();
-      drawEnemies();
+      drawEffects();
       drawOverlayText();
     }
 
     // ======================================================
-    // HUD Y ESTADO
+    // ACTUALIZACIÓN GENERAL
+    // ======================================================
+    function updatePlayer() {
+      player.vx = 0;
+      if (keys.a) { player.vx = -player.speed; player.facing = -1; }
+      if (keys.d) { player.vx = player.speed; player.facing = 1; }
+
+      player.crouching = keys.s && player.isOnGround;
+      player.h = player.crouching ? 50 : 74;
+      player.y = Math.min(player.y, WORLD.groundY - player.h);
+
+      if (keys.w && player.isOnGround && !player.crouching) {
+        player.vy = -player.jumpStrength;
+        player.isOnGround = false;
+      }
+
+      player.x += player.vx;
+      player.vy += WORLD.gravity;
+      player.y += player.vy;
+
+      if (player.y + player.h >= WORLD.groundY) {
+        player.y = WORLD.groundY - player.h;
+        player.vy = 0;
+        player.isOnGround = true;
+      }
+
+      if (player.x < 30) player.x = 30;
+      if (player.x + player.w > WORLD.width * 0.55) player.x = WORLD.width * 0.55 - player.w;
+
+      if (player.shootCooldown > 0) player.shootCooldown -= 1;
+      if (keys.space && player.shootCooldown <= 0) {
+        spawnBullet();
+        player.shootCooldown = 12;
+      }
+
+      if (player.invulnerableTimer > 0) player.invulnerableTimer -= 1;
+      if (player.shootAnimTimer > 0) player.shootAnimTimer -= 1;
+      if (player.hurtAnimTimer > 0) player.hurtAnimTimer -= 1;
+    }
+
+    function updateGame() {
+      worldTime += 1;
+      updatePlayer();
+      spawnBossIfNeeded();
+      updateBullets();
+      updateEnemies();
+      updateBoss();
+      updateEnemyBullets();
+      handleCollisions();
+      updateEffects();
+      updateHUD();
+    }
+
+    // ======================================================
+    // HUD Y REINICIO
     // ======================================================
     function updateHUD() {
       hudLives.textContent = `Vidas: ${player.lives}`;
       hudScore.textContent = `Puntaje: ${score}`;
+      hudSound.textContent = `Sonido: ${soundEnabled ? "ON" : "OFF"} (M)`;
 
-      if (gameState === GAME_STATE.START) {
-        hudState.textContent = "Estado: Inicio";
-      } else if (gameState === GAME_STATE.PLAYING) {
-        hudState.textContent = "Estado: Jugando";
-      } else {
-        hudState.textContent = "Estado: Game Over";
-      }
+      if (gameState === GAME_STATE.START) hudState.textContent = "Estado: Inicio";
+      else if (gameState === GAME_STATE.PLAYING) hudState.textContent = boss.active ? "Estado: Jefe final" : "Estado: Jugando";
+      else if (gameState === GAME_STATE.VICTORY) hudState.textContent = "Estado: Victoria";
+      else hudState.textContent = "Estado: Game Over";
     }
 
     function resetGame() {
       bullets.length = 0;
+      enemyBullets.length = 0;
       enemies.length = 0;
+      hitEffects.length = 0;
+      explosions.length = 0;
       score = 0;
       worldTime = 0;
       enemySpawnTimer = 40;
+      boss.active = false;
+      boss.defeated = false;
+      boss.x = WORLD.width + 260;
+      boss.y = 250;
+      boss.life = boss.maxLife;
+      boss.shootTimer = 0;
+      boss.hitFlash = 0;
       resetPlayer();
       gameState = GAME_STATE.PLAYING;
       updateHUD();
@@ -597,17 +771,12 @@
     // LOOP PRINCIPAL
     // ======================================================
     function gameLoop() {
-      if (gameState === GAME_STATE.PLAYING) {
-        updateGame();
-      } else {
-        updateHUD();
-      }
-
+      if (gameState === GAME_STATE.PLAYING) updateGame();
+      else updateHUD();
       render();
       requestAnimationFrame(gameLoop);
     }
 
-    // Inicialización
     resetPlayer();
     updateHUD();
     requestAnimationFrame(gameLoop);
