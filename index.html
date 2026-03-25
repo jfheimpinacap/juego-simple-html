@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mini Run & Gun 2D</title>
+  <style>
+    :root {
+      --bg: #0f1b1f;
+      --panel: #1b2b31;
+      --accent: #74d680;
+      --text: #f2f7f3;
+      --danger: #ff6767;
+      --warning: #ffd166;
+      --shadow: rgba(0, 0, 0, 0.35);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: radial-gradient(circle at top, #1a2e34 0%, #0c1519 70%);
+      color: var(--text);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+
+    .wrap {
+      width: min(980px, 100%);
+      background: linear-gradient(180deg, #1a2a30, #132126);
+      border: 1px solid #34535e;
+      border-radius: 12px;
+      padding: 14px;
+      box-shadow: 0 18px 40px var(--shadow);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.1rem, 2.5vw, 1.5rem);
+      letter-spacing: 0.5px;
+      color: #c8f3d0;
+      text-align: center;
+    }
+
+    .hud {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+      font-size: 0.95rem;
+    }
+
+    .hud .pill {
+      background: var(--panel);
+      border: 1px solid #34535e;
+      border-radius: 999px;
+      padding: 6px 12px;
+      min-width: 180px;
+      text-align: center;
+    }
+
+    canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 8px;
+      border: 1px solid #33535c;
+      background: #1d3b3f;
+      image-rendering: pixelated;
+    }
+
+    .help {
+      margin-top: 10px;
+      font-size: 0.88rem;
+      opacity: 0.9;
+      text-align: center;
+    }
+
+    .danger { color: var(--danger); }
+    .ok { color: var(--accent); }
+    .warn { color: var(--warning); }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <h1>Mini Run &amp; Gun — Arcade 2D</h1>
+    <div class="hud" id="hud">
+      <div class="pill" id="hudLives">Vidas: 3</div>
+      <div class="pill" id="hudScore">Puntaje: 0</div>
+      <div class="pill" id="hudState">Estado: Inicio</div>
+    </div>
+    <canvas id="gameCanvas" width="960" height="540" aria-label="Juego run and gun 2D"></canvas>
+    <div class="help">
+      Controles: <strong>A</strong> izquierda, <strong>D</strong> derecha, <strong>W</strong> saltar,
+      <strong>S</strong> agacharse, <strong>Espacio</strong> disparar, <strong>R</strong> reiniciar.
+    </div>
+  </main>
+
+  <script>
+    "use strict";
+
+    // ======================================================
+    // CONFIGURACIÓN GENERAL
+    // ======================================================
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const hudLives = document.getElementById("hudLives");
+    const hudScore = document.getElementById("hudScore");
+    const hudState = document.getElementById("hudState");
+
+    const WORLD = {
+      width: canvas.width,
+      height: canvas.height,
+      groundY: 430,
+      gravity: 0.8,
+      cameraSpeed: 2.1,
+    };
+
+    const GAME_STATE = {
+      START: "START",
+      PLAYING: "PLAYING",
+      GAME_OVER: "GAME_OVER",
+    };
+
+    let gameState = GAME_STATE.START;
+    let score = 0;
+    let worldTime = 0;
+
+    // ======================================================
+    // INPUT
+    // ======================================================
+    const keys = {
+      a: false,
+      d: false,
+      w: false,
+      s: false,
+      space: false,
+    };
+
+    window.addEventListener("keydown", (e) => {
+      const k = e.key.toLowerCase();
+      if (k === "a") keys.a = true;
+      if (k === "d") keys.d = true;
+      if (k === "w") keys.w = true;
+      if (k === "s") keys.s = true;
+      if (e.code === "Space") {
+        keys.space = true;
+        e.preventDefault();
+      }
+
+      // Empezar partida desde pantalla inicial
+      if (gameState === GAME_STATE.START && (e.code === "Space" || k === "enter")) {
+        gameState = GAME_STATE.PLAYING;
+      }
+
+      // Reiniciar en Game Over
+      if (gameState === GAME_STATE.GAME_OVER && k === "r") {
+        resetGame();
+      }
+    });
+
+    window.addEventListener("keyup", (e) => {
+      const k = e.key.toLowerCase();
+      if (k === "a") keys.a = false;
+      if (k === "d") keys.d = false;
+      if (k === "w") keys.w = false;
+      if (k === "s") keys.s = false;
+      if (e.code === "Space") keys.space = false;
+    });
+
+    // ======================================================
+    // JUGADOR
+    // ======================================================
+    const player = {
+      x: 140,
+      y: WORLD.groundY - 74,
+      w: 44,
+      h: 74,
+      vx: 0,
+      vy: 0,
+      speed: 4,
+      jumpStrength: 14,
+      isOnGround: true,
+      crouching: false,
+      lives: 3,
+      invulnerableTimer: 0,
+      shootCooldown: 0,
+      facing: 1, // 1 derecha, -1 izquierda
+    };
+
+    function resetPlayer() {
+      player.x = 140;
+      player.y = WORLD.groundY - 74;
+      player.w = 44;
+      player.h = 74;
+      player.vx = 0;
+      player.vy = 0;
+      player.speed = 4;
+      player.jumpStrength = 14;
+      player.isOnGround = true;
+      player.crouching = false;
+      player.lives = 3;
+      player.invulnerableTimer = 0;
+      player.shootCooldown = 0;
+      player.facing = 1;
+    }
+
+    // ======================================================
+    // BALAS
+    // ======================================================
+    const bullets = [];
+
+    function spawnBullet() {
+      const isCrouch = player.crouching;
+      const bulletY = isCrouch ? player.y + player.h * 0.65 : player.y + player.h * 0.42;
+      const bulletX = player.facing === 1 ? player.x + player.w + 2 : player.x - 12;
+      bullets.push({
+        x: bulletX,
+        y: bulletY,
+        w: 12,
+        h: 4,
+        vx: 9 * player.facing,
+      });
+    }
+
+    function updateBullets() {
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+        b.x += b.vx;
+        if (b.x > WORLD.width + 30 || b.x < -30) {
+          bullets.splice(i, 1);
+        }
+      }
+    }
+
+    // ======================================================
+    // ENEMIGOS
+    // ======================================================
+    const enemies = [];
+    let enemySpawnTimer = 0;
+
+    function spawnEnemy() {
+      const size = 42 + Math.random() * 12;
+      const speed = 1.8 + Math.random() * 1.9 + score * 0.01;
+      enemies.push({
+        x: WORLD.width + 20,
+        y: WORLD.groundY - size,
+        w: size,
+        h: size,
+        vx: speed,
+        hitFlash: 0,
+      });
+    }
+
+    function updateEnemies() {
+      enemySpawnTimer -= 1;
+      if (enemySpawnTimer <= 0) {
+        spawnEnemy();
+        // Menor intervalo = más dificultad
+        enemySpawnTimer = Math.max(32, 88 - Math.floor(score / 15));
+      }
+
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const e = enemies[i];
+        e.x -= e.vx + WORLD.cameraSpeed * 0.18;
+        if (e.hitFlash > 0) e.hitFlash -= 1;
+
+        if (e.x + e.w < -40) {
+          enemies.splice(i, 1);
+        }
+      }
+    }
+
+    // ======================================================
+    // COLISIONES
+    // ======================================================
+    function intersects(a, b) {
+      return (
+        a.x < b.x + b.w &&
+        a.x + a.w > b.x &&
+        a.y < b.y + b.h &&
+        a.y + a.h > b.y
+      );
+    }
+
+    function handleCollisions() {
+      // Bala vs enemigo
+      for (let bi = bullets.length - 1; bi >= 0; bi--) {
+        const b = bullets[bi];
+        let bulletRemoved = false;
+
+        for (let ei = enemies.length - 1; ei >= 0; ei--) {
+          const e = enemies[ei];
+          if (intersects(b, e)) {
+            bullets.splice(bi, 1);
+            enemies.splice(ei, 1);
+            score += 10;
+            bulletRemoved = true;
+            break;
+          }
+        }
+
+        if (bulletRemoved) continue;
+      }
+
+      // Enemigo vs jugador
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const e = enemies[i];
+        if (intersects(player, e)) {
+          enemies.splice(i, 1);
+          if (player.invulnerableTimer <= 0) {
+            player.lives -= 1;
+            player.invulnerableTimer = 90;
+            if (player.lives <= 0) {
+              gameState = GAME_STATE.GAME_OVER;
+            }
+          }
+        }
+      }
+    }
+
+    // ======================================================
+    // ACTUALIZACIÓN DE JUEGO
+    // ======================================================
+    function updatePlayer() {
+      // Movimiento horizontal
+      player.vx = 0;
+      if (keys.a) {
+        player.vx = -player.speed;
+        player.facing = -1;
+      }
+      if (keys.d) {
+        player.vx = player.speed;
+        player.facing = 1;
+      }
+
+      // Agacharse (solo en suelo)
+      player.crouching = keys.s && player.isOnGround;
+      if (player.crouching) {
+        player.h = 50;
+      } else {
+        player.h = 74;
+      }
+
+      // Ajustar Y para que no se hunda al cambiar altura
+      player.y = Math.min(player.y, WORLD.groundY - player.h);
+
+      // Salto
+      if (keys.w && player.isOnGround && !player.crouching) {
+        player.vy = -player.jumpStrength;
+        player.isOnGround = false;
+      }
+
+      // Aplicar física
+      player.x += player.vx;
+      player.vy += WORLD.gravity;
+      player.y += player.vy;
+
+      // Suelo
+      if (player.y + player.h >= WORLD.groundY) {
+        player.y = WORLD.groundY - player.h;
+        player.vy = 0;
+        player.isOnGround = true;
+      }
+
+      // Límites laterales
+      if (player.x < 30) player.x = 30;
+      if (player.x + player.w > WORLD.width * 0.55) {
+        player.x = WORLD.width * 0.55 - player.w;
+      }
+
+      // Disparo con enfriamiento
+      if (player.shootCooldown > 0) player.shootCooldown -= 1;
+      if (keys.space && player.shootCooldown <= 0) {
+        spawnBullet();
+        player.shootCooldown = 12;
+      }
+
+      if (player.invulnerableTimer > 0) {
+        player.invulnerableTimer -= 1;
+      }
+    }
+
+    function updateGame() {
+      worldTime += 1;
+      updatePlayer();
+      updateBullets();
+      updateEnemies();
+      handleCollisions();
+      updateHUD();
+    }
+
+    // ======================================================
+    // RENDERIZADO (ESCENARIO Y ENTIDADES)
+    // ======================================================
+    function drawBackground() {
+      // Cielo degradado
+      const sky = ctx.createLinearGradient(0, 0, 0, WORLD.height);
+      sky.addColorStop(0, "#3b7d7e");
+      sky.addColorStop(0.45, "#2e6466");
+      sky.addColorStop(1, "#1e4348");
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+
+      // Siluetas de vegetación / base militar
+      const offsetFar = (worldTime * 0.3) % WORLD.width;
+      const offsetMid = (worldTime * 0.8) % WORLD.width;
+
+      // Capa lejana
+      ctx.fillStyle = "#20454a";
+      for (let i = -1; i < 6; i++) {
+        const x = i * 220 - offsetFar;
+        ctx.fillRect(x + 40, 190, 35, 130);
+        ctx.beginPath();
+        ctx.moveTo(x, 220);
+        ctx.lineTo(x + 70, 150);
+        ctx.lineTo(x + 140, 220);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Capa media
+      ctx.fillStyle = "#2d5b45";
+      for (let i = -1; i < 8; i++) {
+        const x = i * 150 - offsetMid;
+        ctx.fillRect(x + 56, 240, 12, 96);
+        ctx.beginPath();
+        ctx.arc(x + 62, 220, 35, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Suelo
+      ctx.fillStyle = "#435d35";
+      ctx.fillRect(0, WORLD.groundY, WORLD.width, WORLD.height - WORLD.groundY);
+
+      // Línea de terreno para sensación de avance
+      ctx.strokeStyle = "#7b9f5d";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      for (let x = 0; x <= WORLD.width; x += 24) {
+        const y = WORLD.groundY + 8 + Math.sin((x + worldTime * 4) * 0.04) * 3;
+        if (x === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    function drawPlayer() {
+      const blink = player.invulnerableTimer > 0 && Math.floor(player.invulnerableTimer / 6) % 2 === 0;
+      if (blink) return;
+
+      // Cuerpo base
+      ctx.fillStyle = "#8fb07c";
+      ctx.fillRect(player.x + 8, player.y + 20, player.w - 16, player.h - 20);
+
+      // Casco
+      ctx.fillStyle = "#4c6d4f";
+      ctx.fillRect(player.x + 8, player.y + 4, player.w - 16, 18);
+
+      // Rostro
+      ctx.fillStyle = "#d1b08f";
+      ctx.fillRect(player.x + 13, player.y + 10, player.w - 26, 12);
+
+      // Piernas
+      ctx.fillStyle = "#5c7b56";
+      if (player.crouching) {
+        ctx.fillRect(player.x + 9, player.y + player.h - 14, 12, 10);
+        ctx.fillRect(player.x + player.w - 21, player.y + player.h - 14, 12, 10);
+      } else {
+        ctx.fillRect(player.x + 9, player.y + player.h - 24, 12, 20);
+        ctx.fillRect(player.x + player.w - 21, player.y + player.h - 24, 12, 20);
+      }
+
+      // Arma
+      ctx.fillStyle = "#2e2e2e";
+      const gunY = player.crouching ? player.y + player.h * 0.62 : player.y + player.h * 0.42;
+      if (player.facing === 1) {
+        ctx.fillRect(player.x + player.w - 6, gunY, 16, 4);
+      } else {
+        ctx.fillRect(player.x - 10, gunY, 16, 4);
+      }
+    }
+
+    function drawBullets() {
+      ctx.fillStyle = "#ffe082";
+      bullets.forEach((b) => {
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+      });
+    }
+
+    function drawEnemy(e) {
+      // Cuerpo
+      ctx.fillStyle = e.hitFlash > 0 ? "#ff8d8d" : "#d96f4c";
+      ctx.fillRect(e.x, e.y + 10, e.w, e.h - 10);
+
+      // Cabeza
+      ctx.fillStyle = "#784421";
+      ctx.fillRect(e.x + e.w * 0.2, e.y, e.w * 0.6, 14);
+
+      // Piernas
+      ctx.fillStyle = "#803f27";
+      ctx.fillRect(e.x + 6, e.y + e.h - 14, 10, 14);
+      ctx.fillRect(e.x + e.w - 16, e.y + e.h - 14, 10, 14);
+
+      // Ojo
+      ctx.fillStyle = "#fff3d6";
+      ctx.fillRect(e.x + e.w * 0.63, e.y + 5, 5, 3);
+    }
+
+    function drawEnemies() {
+      enemies.forEach(drawEnemy);
+    }
+
+    function drawOverlayText() {
+      if (gameState === GAME_STATE.START) {
+        ctx.fillStyle = "rgba(8, 15, 18, 0.62)";
+        ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+
+        ctx.fillStyle = "#d9ffe2";
+        ctx.textAlign = "center";
+        ctx.font = "bold 46px Segoe UI";
+        ctx.fillText("MINI RUN & GUN", WORLD.width / 2, 165);
+
+        ctx.font = "24px Segoe UI";
+        ctx.fillStyle = "#f5f8f2";
+        ctx.fillText("Instrucciones", WORLD.width / 2, 230);
+
+        ctx.font = "20px Segoe UI";
+        ctx.fillText("A: izquierda | D: derecha | W: saltar | S: agacharse", WORLD.width / 2, 276);
+        ctx.fillText("Espacio: disparar", WORLD.width / 2, 310);
+
+        ctx.font = "bold 22px Segoe UI";
+        ctx.fillStyle = "#aef0ba";
+        ctx.fillText("Pulsa ESPACIO o ENTER para comenzar", WORLD.width / 2, 372);
+      }
+
+      if (gameState === GAME_STATE.GAME_OVER) {
+        ctx.fillStyle = "rgba(10, 0, 0, 0.58)";
+        ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#ffd1d1";
+        ctx.font = "bold 52px Segoe UI";
+        ctx.fillText("GAME OVER", WORLD.width / 2, 220);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "26px Segoe UI";
+        ctx.fillText(`Puntaje final: ${score}`, WORLD.width / 2, 280);
+
+        ctx.fillStyle = "#fff2c2";
+        ctx.font = "bold 24px Segoe UI";
+        ctx.fillText("Pulsa R para reiniciar", WORLD.width / 2, 336);
+      }
+    }
+
+    function render() {
+      drawBackground();
+      drawPlayer();
+      drawBullets();
+      drawEnemies();
+      drawOverlayText();
+    }
+
+    // ======================================================
+    // HUD Y ESTADO
+    // ======================================================
+    function updateHUD() {
+      hudLives.textContent = `Vidas: ${player.lives}`;
+      hudScore.textContent = `Puntaje: ${score}`;
+
+      if (gameState === GAME_STATE.START) {
+        hudState.textContent = "Estado: Inicio";
+      } else if (gameState === GAME_STATE.PLAYING) {
+        hudState.textContent = "Estado: Jugando";
+      } else {
+        hudState.textContent = "Estado: Game Over";
+      }
+    }
+
+    function resetGame() {
+      bullets.length = 0;
+      enemies.length = 0;
+      score = 0;
+      worldTime = 0;
+      enemySpawnTimer = 40;
+      resetPlayer();
+      gameState = GAME_STATE.PLAYING;
+      updateHUD();
+    }
+
+    // ======================================================
+    // LOOP PRINCIPAL
+    // ======================================================
+    function gameLoop() {
+      if (gameState === GAME_STATE.PLAYING) {
+        updateGame();
+      } else {
+        updateHUD();
+      }
+
+      render();
+      requestAnimationFrame(gameLoop);
+    }
+
+    // Inicialización
+    resetPlayer();
+    updateHUD();
+    requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>
